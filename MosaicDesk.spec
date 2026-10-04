@@ -13,6 +13,7 @@ datas += copy_metadata('hbutils')
 datas += collect_data_files('tkinterdnd2')
 datas += [(str(project/'cache'/'huggingface'/'hub'),'cache/huggingface/hub')]
 datas += [(str(project/'LICENSE'),'.'),(str(project/'THIRD_PARTY_NOTICES.txt'),'.')]
+datas += [(str(project/'assets'/'mosaicdesk.ico'),'assets')]
 
 
 a = Analysis(
@@ -37,6 +38,7 @@ exe = EXE(
     a.datas,
     [],
     name='MosaicDesk',
+    icon=str(project/'assets'/'mosaicdesk.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

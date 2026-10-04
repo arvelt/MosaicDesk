@@ -53,7 +53,7 @@ class EditStore:
 
     def save(self, entry):
         updated = deepcopy(self.records)
-        updated[self.key(entry['source'])] = {k: deepcopy(entry[k]) for k in ('source_digest', 'detections')}
+        updated[self.key(entry['source'])] = {k: deepcopy(entry[k]) for k in ('source_digest', 'detections','region_origin','detection_settings') if k in entry}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix='.edits-', suffix='.json', dir=self.path.parent)
         try:
@@ -75,7 +75,7 @@ class RegionEditor:
         self.preview_dirty = False
         self.close_after_save = False
         self.tool = tk.StringVar(value='select')
-        self.edit_note = tk.StringVar(value='領域を選択して調整できます。保存するまで出力は変更しません。')
+        self.edit_note = tk.StringVar(value='領域を選択して調整できます。実行するまで出力は変更しません。')
         ttk.Label(self.panel, text='モザイク領域の編集', font=('Meiryo', 11, 'bold')).pack(anchor='w')
         tools = ttk.Frame(self.panel); tools.pack(fill='x', pady=8)
         ttk.Radiobutton(tools, text='選択・移動', variable=self.tool, value='select').pack(anchor='w')
@@ -100,16 +100,16 @@ class RegionEditor:
         ttk.Button(history, text='Undo', command=self.undo).pack(side='left', expand=True, fill='x')
         ttk.Button(history, text='Redo', command=self.redo).pack(side='left', expand=True, fill='x')
         ttk.Button(self.panel, text='リセット（全領域を消す）', command=self.reset_regions).pack(fill='x')
-        self.save_button = ttk.Button(self.panel, text='この画像を保存・更新', command=self.save_regions)
+        self.save_button = ttk.Button(self.panel, text='編集を反映', command=self.save_regions)
         self.save_button.pack(fill='x', pady=12)
         ttk.Label(self.panel, textvariable=self.edit_note, wraplength=230).pack(anchor='w')
         self.canvas.bind('<ButtonPress-1>', self.pointer_down)
         self.canvas.bind('<B1-Motion>', self.pointer_move)
         self.canvas.bind('<ButtonRelease-1>', self.pointer_up)
-        self.window.bind('<Control-z>', lambda e: self.undo())
-        self.window.bind('<Control-y>', lambda e: self.redo())
-        self.window.bind('<Control-Shift-Z>', lambda e: self.redo())
-        self.window.bind('<Control-Shift-z>', lambda e: self.redo())
+        self.window.bind('<Control-z>', lambda e: self.undo() if self.editing_enabled else None)
+        self.window.bind('<Control-y>', lambda e: self.redo() if self.editing_enabled else None)
+        self.window.bind('<Control-Shift-Z>', lambda e: self.redo() if self.editing_enabled else None)
+        self.window.bind('<Control-Shift-z>', lambda e: self.redo() if self.editing_enabled else None)
         self.refresh_regions()
 
     @property
@@ -143,7 +143,7 @@ class RegionEditor:
     def edited(self):
         self.preview_dirty = True
         self.unsaved = self.regions != self.saved_regions
-        self.edit_note.set('未保存の編集があります。「この画像を保存・更新」で反映します。' if self.unsaved else '編集状態は保存済みです。')
+        self.edit_note.set('未保存の編集があります。「編集を反映」で反映します。' if self.unsaved else '編集状態を一覧に反映しました。')
         self.refresh_regions(); self.schedule_render()
 
     def apply_fields(self):
@@ -191,7 +191,7 @@ class RegionEditor:
 
     def pointer_down(self, event):
         import uuid
-        if self.app.busy: return
+        if self.app.busy or not self.editing_enabled: return
         point = self.image_point(event)
         if point is None: return
         before = deepcopy(self.regions)
@@ -253,13 +253,14 @@ class RegionEditor:
         self.history.commit(self.regions, before=before); self.edited()
 
     def draw_regions(self):
+        if not self.editing_enabled and not self.pending_preview and not self.unsaved: return
         placement = self.placements.get('modified')
         if not placement: return
         x, y, scale = placement
         for index, region in enumerate(self.regions):
             x0, y0, x1, y1 = region['box']
             points = [x+x0*scale, y+y0*scale, x+x1*scale, y+y1*scale]
-            selected = region['id'] == self.selected_id
+            selected = self.editing_enabled and region['id'] == self.selected_id
             color = '#ffd166' if selected else '#ff4050'
             self.canvas.create_rectangle(*points, outline=color, width=2)
             self.canvas.create_text(points[0]+3, points[1]+3, text=str(index+1), fill=color, anchor='nw')
@@ -269,14 +270,15 @@ class RegionEditor:
 
     def save_regions(self):
         if self.app.busy: return
-        self.app.save_document(self.index, deepcopy(self.regions))
+        self.app.apply_document(self.index, deepcopy(self.regions))
 
     def mark_saved(self, entry):
+        self.pending_preview = True
         self.saved_regions = deepcopy(entry['detections'])
         self.history.regions = deepcopy(entry['detections'])
         self.unsaved = False
         self.preview_dirty = True
         self.schedule_render()
-        self.edit_note.set('この画像の出力を更新しました。')
+        self.edit_note.set('編集を一覧に反映しました。出力は実行時に更新します。')
         self.save_button.configure(state='normal')
         if self.close_after_save: self.close()

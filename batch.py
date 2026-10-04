@@ -9,6 +9,7 @@ os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['ONNX_MODE'] = 'cpu'
+from copy import deepcopy
 import argparse, hashlib, json, math, shutil, tempfile, time, traceback, uuid
 import numpy as np
 from PIL import Image, PngImagePlugin
@@ -142,15 +143,20 @@ def png_chunk_types(path):
                 return chunks
 
 
+def detect_regions(image, args, detector=None):
+    labels = {'pussy', 'penis'} | ({'nipple_f'} if args.include_nipple else set())
+    raw = (detector or detect_censors)(image.convert('RGB'), level='s', conf_threshold=args.confidence)
+    regions = [dict(box=list(expand_region(b, args.padding, *image.size)), label=l, confidence=float(c), block=args.block) for b, l, c in raw if l in labels]
+    return normalize_regions(regions, image.size, args.block)
+
+
 def process(src, out, args, detector=None, regions=None):
     src, out = Path(src).resolve(), Path(out).resolve()
     if src == out:
         raise ValueError('元画像を上書きできません。')
     image, meta = load_original(src)
     if regions is None:
-        labels = {'pussy', 'penis'} | ({'nipple_f'} if args.include_nipple else set())
-        raw = (detector or detect_censors)(image.convert('RGB'), level='s', conf_threshold=args.confidence)
-        regions = [dict(box=list(expand_region(b, args.padding, *image.size)), label=l, confidence=float(c), block=args.block) for b, l, c in raw if l in labels]
+        regions = detect_regions(image, args, detector)
     regions = normalize_regions(regions, image.size, args.block)
     result = pixelate(image, regions, args.block)
     strip = getattr(args, 'strip_metadata', True)
@@ -210,8 +216,22 @@ def run(args, progress=None):
         if progress: progress(i - 1, len(images), src.name)
         print(f'[{i}/{len(images)}] {src.name}', flush=True)
         try:
-            regions = documents[i - 1].get('detections') if documents is not None else None
-            entry, _ = process(src, target, args, regions=regions)
+            document = documents[i - 1] if documents is not None else None
+            regions = document.get('render_regions', document.get('detections')) if document is not None else None
+            recipe = dict(source=hashlib.sha256(src.read_bytes()).hexdigest(), regions=[dict(box=r['box'],block=r.get('block',args.block)) for r in regions] if regions is not None else None, strip=bool(getattr(args,'strip_metadata',True)))
+            reusable = document is not None and document.get('saved_recipe')==recipe and target.is_file() and document.get('saved_output_digest')==hashlib.sha256(target.read_bytes()).hexdigest()
+            if reusable:
+                entry=deepcopy(document); entry['status']='保存済み'; entry['skipped']=True
+            else:
+                entry, _ = process(src, target, args, regions=regions)
+                entry['saved_recipe']=recipe
+                entry['saved_output_digest']=hashlib.sha256(target.read_bytes()).hexdigest()
+                if document is not None and 'render_regions' in document:
+                    entry['applied_regions']=deepcopy(entry['detections'])
+                    if document['detections'] is not None: entry['detections']=deepcopy(document['detections'])
+                    for key in ('region_origin','detection_settings'):
+                        if key in document: entry[key]=deepcopy(document[key])
+
         except Exception as exc:
             traceback.print_exc()
             entry = dict(file=src.name, source=str(src), status='エラー', error=str(exc))
